@@ -85,19 +85,44 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
   );
 }
 
+function UnitNameEditor({ units, onChange }: { units: string[]; onChange: (u: string[]) => void }) {
+  const [input, setInput] = useState("");
+  const add = () => {
+    const v = input.trim();
+    if (!v) return;
+    if (units.includes(v)) { toast("Already added", "error"); return; }
+    onChange([...units, v]);
+    setInput("");
+  };
+  return (
+    <div class="rt-field">
+      <label class="rt-label">Unit Names</label>
+      <div class="rt-unit-builder">
+        <input class="rt-input" value={input} onInput={e => setInput((e.target as HTMLInputElement).value)} onKeyDown={e => e.key === "Enter" && add()} placeholder="e.g. Front House, Back Cottage, Studio..." />
+        <button class="rt-btn rt-btn-secondary rt-btn-sm" onClick={add} type="button">Add</button>
+      </div>
+      {units.length > 0 && (
+        <div class="rt-unit-tags mt-2">
+          {units.map((u, i) => (
+            <span class="rt-unit-tag rt-unit-tag-removable" key={u}>
+              {u}
+              <button class="rt-unit-tag-x" onClick={() => onChange(units.filter((_, idx) => idx !== i))} type="button">×</button>
+            </span>
+          ))}
+        </div>
+      )}
+      {units.length === 0 && <div class="text-dim text-sm mt-1">Add unit names, or leave empty for a single-unit property.</div>}
+    </div>
+  );
+}
+
 function PropertiesTab({ properties, reload }: { properties: Property[]; reload: () => void }) {
   const [modal, setModal] = useState(false);
+  const [editProp, setEditProp] = useState<Property | null>(null);
+  const [editUnits, setEditUnits] = useState<string[]>([]);
   const [form, setForm] = useState({ name: "", address: "" });
   const [unitNames, setUnitNames] = useState<string[]>([]);
-  const [unitInput, setUnitInput] = useState("");
-  const addUnit = () => {
-    const v = unitInput.trim();
-    if (!v) return;
-    if (unitNames.includes(v)) { toast("Unit name already added", "error"); return; }
-    setUnitNames(u => [...u, v]);
-    setUnitInput("");
-  };
-  const removeUnit = (i: number) => setUnitNames(u => u.filter((_, idx) => idx !== i));
+
   const save = async () => {
     if (!form.name || !form.address) { toast("Name and address required", "error"); return; }
     await post("properties", { ...form, unitNames, units: unitNames.length || 1 });
@@ -105,7 +130,17 @@ function PropertiesTab({ properties, reload }: { properties: Property[]; reload:
     setModal(false);
     setForm({ name: "", address: "" });
     setUnitNames([]);
-    setUnitInput("");
+    reload();
+  };
+  const saveUnits = async () => {
+    if (!editProp) return;
+    await apiFetch(`${API("properties")}&id=${editProp.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...editProp, unitNames: editUnits, units: editUnits.length || editProp.units }),
+    });
+    toast("Units updated");
+    setEditProp(null);
     reload();
   };
   const remove = async (id: string) => {
@@ -126,7 +161,10 @@ function PropertiesTab({ properties, reload }: { properties: Property[]; reload:
             <div class="rt-card" key={p.id}>
               <div class="flex justify-between items-center mb-2">
                 <div style="font-size:20px">🏠</div>
-                <button class="rt-btn rt-btn-danger rt-btn-sm" onClick={() => remove(p.id)}>Remove</button>
+                <div class="flex gap-2">
+                  <button class="rt-btn rt-btn-secondary rt-btn-sm" onClick={() => { setEditProp(p); setEditUnits(p.unitNames ?? []); }}>Units</button>
+                  <button class="rt-btn rt-btn-danger rt-btn-sm" onClick={() => remove(p.id)}>Remove</button>
+                </div>
               </div>
               <div class="font-bold" style="font-size:15px">{p.name}</div>
               <div class="text-dim text-sm mt-1">{p.address}</div>
@@ -140,29 +178,20 @@ function PropertiesTab({ properties, reload }: { properties: Property[]; reload:
         </div>
       )}
       {modal && (
-        <Modal title="Add Property" onClose={() => { setModal(false); setUnitNames([]); setUnitInput(""); }}>
+        <Modal title="Add Property" onClose={() => { setModal(false); setUnitNames([]); }}>
           <div class="rt-form">
             <div class="rt-field"><label class="rt-label">Property Name</label><input class="rt-input" value={form.name} onInput={e => setForm(f => ({ ...f, name: (e.target as HTMLInputElement).value }))} placeholder="e.g. Maple Street House" /></div>
             <div class="rt-field"><label class="rt-label">Address</label><input class="rt-input" value={form.address} onInput={e => setForm(f => ({ ...f, address: (e.target as HTMLInputElement).value }))} placeholder="123 Main St, City, WV" /></div>
-            <div class="rt-field">
-              <label class="rt-label">Unit Names</label>
-              <div class="rt-unit-builder">
-                <input class="rt-input" value={unitInput} onInput={e => setUnitInput((e.target as HTMLInputElement).value)} onKeyDown={e => e.key === "Enter" && addUnit()} placeholder="e.g. Front House, Back Cottage, Studio..." />
-                <button class="rt-btn rt-btn-secondary rt-btn-sm" onClick={addUnit} type="button">Add</button>
-              </div>
-              {unitNames.length > 0 && (
-                <div class="rt-unit-tags mt-2">
-                  {unitNames.map((u, i) => (
-                    <span class="rt-unit-tag rt-unit-tag-removable" key={u}>
-                      {u}
-                      <button class="rt-unit-tag-x" onClick={() => removeUnit(i)} type="button">×</button>
-                    </span>
-                  ))}
-                </div>
-              )}
-              {unitNames.length === 0 && <div class="text-dim text-sm mt-1">Add at least one unit name, or leave empty for a single-unit property.</div>}
-            </div>
+            <UnitNameEditor units={unitNames} onChange={setUnitNames} />
             <button class="rt-btn rt-btn-primary w-full mt-2" onClick={save}>Save Property</button>
+          </div>
+        </Modal>
+      )}
+      {editProp && (
+        <Modal title={`Units — ${editProp.name}`} onClose={() => setEditProp(null)}>
+          <div class="rt-form">
+            <UnitNameEditor units={editUnits} onChange={setEditUnits} />
+            <button class="rt-btn rt-btn-primary w-full mt-2" onClick={saveUnits}>Save Units</button>
           </div>
         </Modal>
       )}
