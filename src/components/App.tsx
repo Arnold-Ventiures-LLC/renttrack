@@ -192,7 +192,10 @@ function RentersTab({ renters, properties, reload }: { renters: Renter[]; proper
                 )}
               </div>
             </div>
-            <div class="rt-field"><label class="rt-label">4-Digit Portal PIN</label><input class="rt-input" type="password" inputMode="numeric" maxLength={4} value={form.pin} onInput={e => setForm(f => ({ ...f, pin: (e.target as HTMLInputElement).value }))} placeholder="••••" /></div>
+            <div class="rt-field">
+              <label class="rt-label">Portal PIN <span style="font-weight:400;opacity:0.6">(optional — renter can set on first login)</span></label>
+              <input class="rt-input" type="password" inputMode="numeric" maxLength={4} value={form.pin} onInput={e => setForm(f => ({ ...f, pin: (e.target as HTMLInputElement).value }))} placeholder="Leave blank for self-setup" />
+            </div>
             <button class="rt-btn rt-btn-primary w-full mt-2" onClick={save}>Save Renter</button>
           </div>
         </Modal>
@@ -506,18 +509,34 @@ function AdminPanel({ onExit }: { onExit: () => void }) {
 function RenterPortal({ renters, properties, payments, allocations, bills, reloadBills, onAdminLogin }: { renters: Renter[]; properties: Property[]; payments: Payment[]; allocations: Allocation[]; bills: Bill[]; reloadBills: () => void; onAdminLogin: () => void }) {
   const [renterId, setRenterId] = useState("");
   const [pinInput, setPinInput] = useState("");
+  const [pinConfirm, setPinConfirm] = useState("");
   const [pinError, setPinError] = useState(false);
+  const [pinSaving, setPinSaving] = useState(false);
   const [unlocked, setUnlocked] = useState(false);
   const [billToMark, setBillToMark] = useState<Bill | null>(null);
   const [confirmNum, setConfirmNum] = useState("");
   const [markingPaid, setMarkingPaid] = useState(false);
   const selectedRenter = renters.find(r => r.id === renterId);
+  const noPin = !!selectedRenter && !selectedRenter.pin;
   const handlePinSubmit = () => {
     if (!selectedRenter) return;
     if (pinInput === String(selectedRenter.pin)) { setUnlocked(true); setPinError(false); }
     else { setPinError(true); setPinInput(""); toast("Incorrect PIN", "error"); }
   };
-  const handleRenterChange = (id: string) => { setRenterId(id); setPinInput(""); setPinError(false); setUnlocked(false); };
+  const handleSetPin = async () => {
+    if (pinInput.length !== 4 || !/^\d{4}$/.test(pinInput)) { toast("PIN must be 4 digits", "error"); return; }
+    if (pinInput !== pinConfirm) { toast("PINs don't match", "error"); setPinConfirm(""); return; }
+    setPinSaving(true);
+    await apiFetch(`${API("renters")}&id=${selectedRenter!.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: pinInput }),
+    });
+    toast("PIN set — you're in! ✓");
+    setPinSaving(false);
+    setUnlocked(true);
+  };
+  const handleRenterChange = (id: string) => { setRenterId(id); setPinInput(""); setPinConfirm(""); setPinError(false); setUnlocked(false); };
   const renter = unlocked ? selectedRenter : undefined;
   const property = renter ? properties.find(p => p.id === renter.propertyId) : null;
   const myPayments = payments.filter(p => p.renterId === renterId);
@@ -542,7 +561,7 @@ function RenterPortal({ renters, properties, payments, allocations, bills, reloa
       <div class="rt-portal">
         <div class="rt-login">
           <div class="rt-login-title">Renter Portal</div>
-          <div class="rt-login-sub">Select your name and enter your 4-digit PIN to view your details.</div>
+          <div class="rt-login-sub">Select your name to get started. First-time users will create their own PIN.</div>
           <div class="rt-form">
             <div class="rt-field">
               <label class="rt-label">Your Name</label>
@@ -551,7 +570,31 @@ function RenterPortal({ renters, properties, payments, allocations, bills, reloa
                 {renters.map(r => <option value={r.id}>{r.name}</option>)}
               </select>
             </div>
-            {renterId && !unlocked && (
+            {renterId && !unlocked && noPin && (
+              <div>
+                <div style="background:rgba(56,189,153,0.1);border:1px solid rgba(56,189,153,0.3);border-radius:8px;padding:10px 14px;font-size:13px;color:var(--rt-teal);margin-bottom:12px">
+                  First time here? Create a 4-digit PIN to secure your portal.
+                </div>
+                <div class="rt-field">
+                  <label class="rt-label">Create PIN</label>
+                  <input class="rt-input" type="password" inputMode="numeric" maxLength={4} placeholder="••••" value={pinInput}
+                    onInput={e => setPinInput((e.target as HTMLInputElement).value)}
+                    onKeyDown={e => { if (e.key==="Enter" && pinInput.length===4) (document.querySelector("#pin-confirm") as HTMLInputElement)?.focus(); }}
+                  />
+                </div>
+                <div class="rt-field">
+                  <label class="rt-label">Confirm PIN</label>
+                  <input id="pin-confirm" class="rt-input" type="password" inputMode="numeric" maxLength={4} placeholder="••••" value={pinConfirm}
+                    onInput={e => setPinConfirm((e.target as HTMLInputElement).value)}
+                    onKeyDown={e => { if (e.key==="Enter" && pinConfirm.length===4) handleSetPin(); }}
+                  />
+                </div>
+                <button class="rt-btn rt-btn-primary w-full mt-2" onClick={handleSetPin} disabled={pinInput.length!==4||pinConfirm.length!==4||pinSaving}>
+                  {pinSaving ? "Saving..." : "Set PIN & Enter"}
+                </button>
+              </div>
+            )}
+            {renterId && !unlocked && !noPin && (
               <div class="rt-field">
                 <label class="rt-label">4-Digit PIN {pinError && <span style="color:var(--rt-rose);margin-left:6px">Incorrect</span>}</label>
                 <input class="rt-input" type="password" inputMode="numeric" maxLength={4} placeholder="••••" value={pinInput}
