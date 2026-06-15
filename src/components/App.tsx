@@ -1,4 +1,5 @@
 import { useState, useEffect } from "preact/hooks";
+import { AiChatWidget } from "./AiChat";
 
 const BASE = "/api/rent-tracker";
 const API = (entity: string, extra = "") => `${BASE}?entity=${entity}${extra}`;
@@ -1138,6 +1139,7 @@ export function App() {
         ? adminUnlocked ? <AdminPanel onExit={exitAdmin} /> : <AdminAuth onUnlock={() => setAdminUnlocked(true)} />
         : <RenterPortal renters={renters} properties={properties} payments={payments} allocations={allocations} bills={bills} reloadBills={reloadBills} payMethods={payMethods} onAdminLogin={goAdmin} reloadRenters={reloadRenters} />
       }
+      <AiChatWidget />
     </div>
   );
 }
