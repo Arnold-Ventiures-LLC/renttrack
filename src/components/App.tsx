@@ -7,7 +7,8 @@ const fmt = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigi
 const COLORS = ["#00c9a7","#f59e0b","#818cf8","#f43f5e","#34d399","#60a5fa","#fb923c","#e879f9"];
 
 type Property = { id: string; name: string; address: string; units: number };
-type Renter = { id: string; name: string; email: string; propertyId: string; unit: string; rentAmount: number; rentFrequency: "monthly"|"weekly"; dueDay: number; pin?: string };
+type Renter = { id: string; name: string; email: string; phone?: string; propertyId: string; unit: string; rentAmount: number; rentFrequency: "monthly"|"weekly"; dueDay: number; pin?: string; photo?: string };
+type Message = { id: string; renterId: string; renterName: string; propertyId: string; text: string; createdAt: string; isAdmin?: boolean };
 const WEEKDAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 type Payment = { id: string; renterId: string; amount: number; date: string; paidThrough: string; status: "paid"|"pending"|"late"; note: string };
 
@@ -564,6 +565,217 @@ function BillsTab({ bills, properties, reload }: { bills: Bill[]; properties: Pr
   );
 }
 
+// Resize image to max 200x200 JPEG base64
+function resizeImage(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const MAX = 200;
+      const scale = Math.min(MAX / img.width, MAX / img.height, 1);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL("image/jpeg", 0.75));
+    };
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+function ProfileModal({ renter, onClose, onSaved }: { renter: Renter; onClose: () => void; onSaved: (updated: Partial<Renter>) => void }) {
+  const [name, setName] = useState(renter.name);
+  const [email, setEmail] = useState(renter.email || "");
+  const [phone, setPhone] = useState(renter.phone || "");
+  const [photo, setPhoto] = useState(renter.photo || "");
+  const [uploading, setUploading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const handlePhoto = async (e: Event) => {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try { setPhoto(await resizeImage(file)); } catch { toast("Photo upload failed", "error"); }
+    setUploading(false);
+  };
+
+  const save = async () => {
+    if (!name.trim()) { toast("Name is required", "error"); return; }
+    setSaving(true);
+    const updates: Partial<Renter> = { name: name.trim(), email, phone, photo };
+    await apiFetch(`${API("renters")}&id=${renter.id}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    });
+    toast("Profile updated ✓");
+    onSaved(updates);
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <Modal title="Edit Profile" onClose={onClose}>
+      <div class="rt-form">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin-bottom:16px">
+          <div style={`width:90px;height:90px;border-radius:50%;background:rgba(255,255,255,0.08);border:2px solid var(--rt-border);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:36px`}>
+            {photo ? <img src={photo} style="width:100%;height:100%;object-fit:cover" /> : "🧑"}
+          </div>
+          <label style="cursor:pointer">
+            <span class="rt-btn rt-btn-ghost rt-btn-sm">{uploading ? "Uploading..." : photo ? "Change Photo" : "Upload Photo"}</span>
+            <input type="file" accept="image/*" style="display:none" onChange={handlePhoto} disabled={uploading} />
+          </label>
+          {photo && <button class="rt-btn rt-btn-ghost rt-btn-sm" style="opacity:0.5;font-size:12px" onClick={() => setPhoto("")}>Remove photo</button>}
+        </div>
+        <div class="rt-field"><label class="rt-label">Display Name</label><input class="rt-input" value={name} onInput={e => setName((e.target as HTMLInputElement).value)} /></div>
+        <div class="rt-field"><label class="rt-label">Email</label><input class="rt-input" type="email" value={email} onInput={e => setEmail((e.target as HTMLInputElement).value)} placeholder="your@email.com" /></div>
+        <div class="rt-field"><label class="rt-label">Phone</label><input class="rt-input" type="tel" value={phone} onInput={e => setPhone((e.target as HTMLInputElement).value)} placeholder="(304) 555-0100" /></div>
+        <button class="rt-btn rt-btn-primary w-full mt-2" onClick={save} disabled={saving || uploading}>{saving ? "Saving..." : "Save Profile"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function ChatCard({ renter, propertyName }: { renter: Renter; propertyName: string }) {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const bottomRef = { current: null as HTMLDivElement | null };
+
+  const load = () => apiFetch(`${API("messages")}`).then(r => r.json())
+    .then((all: Message[]) => setMessages(all.filter(m => m.propertyId === renter.propertyId).sort((a,b) => a.createdAt.localeCompare(b.createdAt))))
+    .catch(() => {});
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 8000);
+    return () => clearInterval(t);
+  }, [renter.propertyId]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length]);
+
+  const send = async () => {
+    if (!text.trim() || sending) return;
+    setSending(true);
+    await apiFetch(API("messages"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ renterId: renter.id, renterName: renter.name, propertyId: renter.propertyId, text: text.trim() }),
+    });
+    setText(""); setSending(false); load();
+  };
+
+  const fmtTime = (iso: string) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  };
+
+  return (
+    <div class="rt-card" style="margin-bottom:16px">
+      <div class="rt-card-title" style="margin-bottom:12px">💬 House Chat <span style="font-size:12px;font-weight:400;color:var(--rt-muted);margin-left:6px">{propertyName}</span></div>
+      <div style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;margin-bottom:12px;padding-right:4px">
+        {messages.length === 0 && <div class="rt-empty" style="padding:24px 0"><div class="rt-empty-icon">💬</div><div>No messages yet. Say hi!</div></div>}
+        {messages.map(m => {
+          const isMe = m.renterId === renter.id;
+          return (
+            <div key={m.id} style={`display:flex;flex-direction:column;align-items:${isMe?"flex-end":"flex-start"}`}>
+              <div style={`max-width:80%;padding:8px 12px;border-radius:${isMe?"12px 12px 4px 12px":"12px 12px 12px 4px"};background:${isMe?"var(--rt-teal)":"rgba(255,255,255,0.08)"};color:${isMe?"#0a1628":"var(--rt-text)"};font-size:14px;line-height:1.4`}>
+                {m.text}
+              </div>
+              <div style="font-size:11px;color:var(--rt-muted);margin-top:2px;padding:0 4px">
+                {!isMe && <span style="font-weight:600;margin-right:4px">{m.renterName}</span>}
+                {fmtTime(m.createdAt)}
+              </div>
+            </div>
+          );
+        })}
+        <div ref={(el) => { bottomRef.current = el as HTMLDivElement; }} />
+      </div>
+      <div style="display:flex;gap:8px">
+        <input class="rt-input" style="flex:1" placeholder="Type a message..." value={text}
+          onInput={e => setText((e.target as HTMLInputElement).value)}
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+        />
+        <button class="rt-btn rt-btn-primary rt-btn-sm" onClick={send} disabled={!text.trim() || sending} style="min-width:60px">
+          {sending ? "..." : "Send"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AdminChatTab({ messages, renters, properties, reload }: { messages: Message[]; renters: Renter[]; properties: Property[]; reload: () => void }) {
+  const [adminText, setAdminText] = useState("");
+  const [propId, setPropId] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const send = async () => {
+    if (!adminText.trim() || !propId || sending) return;
+    setSending(true);
+    await apiFetch(API("messages"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ renterId: "admin", renterName: "Admin", propertyId: propId, text: adminText.trim(), isAdmin: true }),
+    });
+    setAdminText(""); setSending(false); reload();
+  };
+
+  const fmtTime = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const propName = (id: string) => properties.find(p => p.id === id)?.name ?? "Unknown";
+
+  const grouped = properties.map(p => ({
+    property: p,
+    msgs: messages.filter(m => m.propertyId === p.id).sort((a,b) => a.createdAt.localeCompare(b.createdAt)),
+  })).filter(g => g.msgs.length > 0);
+
+  return (
+    <div>
+      <div class="rt-card-header">
+        <div class="rt-card-title">House Chat</div>
+      </div>
+      <div class="rt-card" style="margin-bottom:16px;padding:14px 16px">
+        <div class="rt-card-title" style="font-size:13px;margin-bottom:10px">Send message as Admin</div>
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <select class="rt-select" style="flex:1" value={propId} onChange={e => setPropId((e.target as HTMLSelectElement).value)}>
+            <option value="">Select property...</option>
+            {properties.map(p => <option value={p.id}>{p.name}</option>)}
+          </select>
+        </div>
+        <div style="display:flex;gap:8px">
+          <input class="rt-input" style="flex:1" placeholder="Type a message to renters..." value={adminText}
+            onInput={e => setAdminText((e.target as HTMLInputElement).value)}
+            onKeyDown={e => { if (e.key==="Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+          />
+          <button class="rt-btn rt-btn-primary rt-btn-sm" onClick={send} disabled={!adminText.trim()||!propId||sending}>{sending?"...":"Send"}</button>
+        </div>
+      </div>
+      {grouped.length === 0 && <div class="rt-empty"><div class="rt-empty-icon">💬</div><div>No messages yet.</div></div>}
+      {grouped.map(g => (
+        <div key={g.property.id} class="rt-card" style="margin-bottom:16px">
+          <div class="rt-card-title" style="margin-bottom:12px">🏘️ {g.property.name}</div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            {g.msgs.map(m => (
+              <div key={m.id} style="display:flex;gap:10px;align-items:flex-start">
+                <div style={`width:32px;height:32px;border-radius:50%;background:${m.isAdmin?"var(--rt-teal)":"rgba(255,255,255,0.1)"};display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0`}>
+                  {m.isAdmin ? "🔑" : (renters.find(r => r.id === m.renterId)?.photo ? <img src={renters.find(r => r.id === m.renterId)!.photo} style="width:100%;height:100%;object-fit:cover;border-radius:50%" /> : "🧑")}
+                </div>
+                <div style="flex:1">
+                  <div style="font-size:12px;color:var(--rt-muted);margin-bottom:2px">
+                    <span style="font-weight:600;color:var(--rt-text)">{m.renterName}</span> · {fmtTime(m.createdAt)}
+                  </div>
+                  <div style="font-size:14px">{m.text}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AdminAuth({ onUnlock }: { onUnlock: () => void }) {
   const [pin, setPin] = useState("");
   const [confirm2, setConfirm2] = useState("");
@@ -618,11 +830,12 @@ function AdminPanel({ onExit }: { onExit: () => void }) {
   const [allocations,,reloadAllocs] = useData<Allocation>("allocations");
   const [bills,,reloadBills] = useData<Bill>("bills");
   const [payMethods,,reloadPayMethods] = useData<PayMethod>("payMethods");
+  const [messages,,reloadMessages] = useData<Message>("messages");
   const [tab, setTab] = useState("properties");
   return (
     <div>
       <div class="rt-tabs" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
-        {[["properties","🏘️ Properties"],["renters","👤 Renters"],["payments","💳 Payments"],["allocations","🥧 Allocations"],["bills","🧾 Bills"],["paymethods","💸 Pay Methods"]].map(([id,label]) => (
+        {[["properties","🏘️ Properties"],["renters","👤 Renters"],["payments","💳 Payments"],["allocations","🥧 Allocations"],["bills","🧾 Bills"],["paymethods","💸 Pay Methods"],["chat","💬 Chat"]].map(([id,label]) => (
           <button key={id} class={`rt-tab${tab===id?" active":""}`} onClick={() => setTab(id)}>{label}</button>
         ))}
         <button class="rt-btn rt-btn-ghost rt-btn-sm" style="margin-left:auto;white-space:nowrap" onClick={onExit}>← Renter Portal</button>
@@ -633,17 +846,19 @@ function AdminPanel({ onExit }: { onExit: () => void }) {
       {tab==="allocations" && <AllocationsTab allocations={allocations} reload={reloadAllocs} />}
       {tab==="bills" && <BillsTab bills={bills} properties={properties} reload={reloadBills} />}
       {tab==="paymethods" && <PayMethodsTab payMethods={payMethods} reload={reloadPayMethods} />}
+      {tab==="chat" && <AdminChatTab messages={messages} renters={renters} properties={properties} reload={reloadMessages} />}
     </div>
   );
 }
 
-function RenterPortal({ renters, properties, payments, allocations, bills, reloadBills, payMethods, onAdminLogin }: { renters: Renter[]; properties: Property[]; payments: Payment[]; allocations: Allocation[]; bills: Bill[]; reloadBills: () => void; payMethods: PayMethod[]; onAdminLogin: () => void }) {
+function RenterPortal({ renters, properties, payments, allocations, bills, reloadBills, payMethods, onAdminLogin, reloadRenters }: { renters: Renter[]; properties: Property[]; payments: Payment[]; allocations: Allocation[]; bills: Bill[]; reloadBills: () => void; payMethods: PayMethod[]; onAdminLogin: () => void; reloadRenters: () => void }) {
   const [renterId, setRenterId] = useState("");
   const [pinInput, setPinInput] = useState("");
   const [pinConfirm, setPinConfirm] = useState("");
   const [pinError, setPinError] = useState(false);
   const [pinSaving, setPinSaving] = useState(false);
   const [unlocked, setUnlocked] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const [billToMark, setBillToMark] = useState<Bill | null>(null);
   const [confirmNum, setConfirmNum] = useState("");
   const [markingPaid, setMarkingPaid] = useState(false);
@@ -751,8 +966,15 @@ function RenterPortal({ renters, properties, payments, allocations, bills, reloa
   return (
     <div class="rt-portal">
       <div class="rt-portal-hero">
+        <div style="position:relative;display:inline-block;margin-bottom:8px">
+          <div style="width:80px;height:80px;border-radius:50%;background:rgba(255,255,255,0.1);border:3px solid var(--rt-teal);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:36px;margin:0 auto">
+            {renter.photo ? <img src={renter.photo} style="width:100%;height:100%;object-fit:cover" /> : "🧑"}
+          </div>
+          <button onClick={() => setShowProfile(true)} style="position:absolute;bottom:0;right:0;width:26px;height:26px;border-radius:50%;background:var(--rt-teal);border:2px solid #0a1628;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px" title="Edit profile">✏️</button>
+        </div>
         <div class="rt-portal-name">👋 Hi, {renter.name}</div>
         <div class="rt-portal-prop">{property?.name ?? "—"}{renter.unit ? ` · Unit ${renter.unit}` : ""}</div>
+        {renter.phone && <div style="font-size:13px;color:var(--rt-muted);margin-top:2px">{renter.phone}</div>}
         <div class="rt-portal-amount">{fmt(renter.rentAmount)}</div>
         <div class="rt-portal-due">
           {(renter.rentFrequency==="weekly")
@@ -864,9 +1086,13 @@ function RenterPortal({ renters, properties, payments, allocations, bills, reloa
           </div>
         )}
       </div>
+      <ChatCard renter={renter} propertyName={property?.name ?? ""} />
       <div style="margin-top:16px;text-align:center">
         <button class="rt-btn rt-btn-ghost rt-btn-sm" onClick={() => handleRenterChange("")}>← Switch Renter</button>
       </div>
+      {showProfile && (
+        <ProfileModal renter={renter} onClose={() => setShowProfile(false)} onSaved={() => { reloadRenters(); }} />
+      )}
       {billToMark && (
         <Modal title={`Mark as Paid — ${billToMark.name}`} onClose={() => { setBillToMark(null); setConfirmNum(""); }}>
           <div class="rt-form">
@@ -895,7 +1121,7 @@ function RenterPortal({ renters, properties, payments, allocations, bills, reloa
 export function App() {
   const [mode, setMode] = useState<"admin"|"renter">("renter");
   const [adminUnlocked, setAdminUnlocked] = useState(false);
-  const [renters] = useData<Renter>("renters");
+  const [renters,,reloadRenters] = useData<Renter>("renters");
   const [properties] = useData<Property>("properties");
   const [payments] = useData<Payment>("payments");
   const [allocations] = useData<Allocation>("allocations");
@@ -910,7 +1136,7 @@ export function App() {
       </div>
       {mode==="admin"
         ? adminUnlocked ? <AdminPanel onExit={exitAdmin} /> : <AdminAuth onUnlock={() => setAdminUnlocked(true)} />
-        : <RenterPortal renters={renters} properties={properties} payments={payments} allocations={allocations} bills={bills} reloadBills={reloadBills} payMethods={payMethods} onAdminLogin={goAdmin} />
+        : <RenterPortal renters={renters} properties={properties} payments={payments} allocations={allocations} bills={bills} reloadBills={reloadBills} payMethods={payMethods} onAdminLogin={goAdmin} reloadRenters={reloadRenters} />
       }
     </div>
   );
