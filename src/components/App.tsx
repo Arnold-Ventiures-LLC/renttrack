@@ -672,11 +672,8 @@ function RenterPortal({ renters, properties, payments, allocations, bills, reloa
   const property = renter ? properties.find(p => p.id === renter.propertyId) : null;
   const myPayments = payments.filter(p => p.renterId === renterId);
   const paid = myPayments.filter(p => p.status==="paid").reduce((s,p) => s+p.amount, 0);
-  const paidThrough = myPayments
-    .filter(p => p.status==="paid" && p.paidThrough)
-    .map(p => p.paidThrough)
-    .sort()
-    .at(-1) ?? null;
+  const _ptSorted = myPayments.filter(p => p.status==="paid" && p.paidThrough).map(p => p.paidThrough).sort();
+  const paidThrough = _ptSorted.length > 0 ? _ptSorted[_ptSorted.length - 1] : null;
   const allTotal = allocations.reduce((s,a) => s+a.pct, 0);
   const myBills = renter ? bills.filter(b => b.propertyId === renter.propertyId) : [];
   const handleMarkPaid = async () => {
