@@ -8,14 +8,16 @@ const COLORS = ["#00c9a7","#f59e0b","#818cf8","#f43f5e","#34d399","#60a5fa","#fb
 
 type Property = { id: string; name: string; address: string; units: number };
 type Renter = { id: string; name: string; email: string; propertyId: string; unit: string; rentAmount: number; rentFrequency: "monthly"|"weekly"; dueDay: number; pin?: string };
-const WEEKDAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+const WEEKDAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 type Payment = { id: string; renterId: string; amount: number; date: string; paidThrough: string; status: "paid"|"pending"|"late"; note: string };
 
 function paidThroughDefault(renter: Renter | undefined, payDate: string): string {
   if (!renter || !payDate) return "";
   const d = new Date(payDate + "T00:00:00");
   if (renter.rentFrequency === "weekly") {
-    d.setDate(d.getDate() + 6);
+    // Advance to the following Saturday (end of Sun–Sat week)
+    const dow = d.getDay(); // 0=Sun, 6=Sat
+    d.setDate(d.getDate() + (6 - dow));
   } else {
     // end of the month of payDate
     d.setMonth(d.getMonth() + 1, 0);
