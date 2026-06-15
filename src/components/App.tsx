@@ -9,7 +9,19 @@ const COLORS = ["#00c9a7","#f59e0b","#818cf8","#f43f5e","#34d399","#60a5fa","#fb
 type Property = { id: string; name: string; address: string; units: number };
 type Renter = { id: string; name: string; email: string; propertyId: string; unit: string; rentAmount: number; rentFrequency: "monthly"|"weekly"; dueDay: number; pin?: string };
 const WEEKDAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
-type Payment = { id: string; renterId: string; amount: number; date: string; status: "paid"|"pending"|"late"; note: string };
+type Payment = { id: string; renterId: string; amount: number; date: string; paidThrough: string; status: "paid"|"pending"|"late"; note: string };
+
+function paidThroughDefault(renter: Renter | undefined, payDate: string): string {
+  if (!renter || !payDate) return "";
+  const d = new Date(payDate + "T00:00:00");
+  if (renter.rentFrequency === "weekly") {
+    d.setDate(d.getDate() + 6);
+  } else {
+    // end of the month of payDate
+    d.setMonth(d.getMonth() + 1, 0);
+  }
+  return d.toISOString().slice(0, 10);
+}
 type Allocation = { id: string; label: string; pct: number; color: string };
 type Bill = { id: string; name: string; propertyId: string; amount: number; dueDate: string; frequency: string; status: "paid"|"pending"|"overdue"; notes: string; confirmationNumber?: string };
 
@@ -205,12 +217,21 @@ function RentersTab({ renters, properties, reload }: { renters: Renter[]; proper
 }
 
 function PaymentsTab({ payments, renters, reload }: { payments: Payment[]; renters: Renter[]; reload: () => void }) {
+  const today = new Date().toISOString().slice(0,10);
   const [modal, setModal] = useState(false);
-  const [form, setForm] = useState({ renterId: "", amount: "", date: new Date().toISOString().slice(0,10), status: "paid", note: "" });
+  const [form, setForm] = useState({ renterId: "", amount: "", date: today, paidThrough: "", status: "paid", note: "" });
+  const setRenter = (id: string) => {
+    const r = renters.find(x => x.id === id);
+    setForm(f => ({ ...f, renterId: id, amount: r ? String(r.rentAmount) : f.amount, paidThrough: paidThroughDefault(r, f.date) }));
+  };
+  const setDate = (date: string) => {
+    const r = renters.find(x => x.id === form.renterId);
+    setForm(f => ({ ...f, date, paidThrough: paidThroughDefault(r, date) }));
+  };
   const save = async () => {
     if (!form.renterId || !form.amount) { toast("Renter and amount required", "error"); return; }
     await post("payments", { ...form, amount: parseFloat(form.amount) });
-    toast("Payment logged"); setModal(false); setForm({ renterId: "", amount: "", date: new Date().toISOString().slice(0,10), status: "paid", note: "" }); reload();
+    toast("Payment logged"); setModal(false); setForm({ renterId: "", amount: "", date: today, paidThrough: "", status: "paid", note: "" }); reload();
   };
   const renterName = (id: string) => renters.find(r => r.id === id)?.name ?? "Unknown";
   const total = payments.filter(p => p.status === "paid").reduce((s,p) => s+p.amount, 0);
@@ -231,12 +252,13 @@ function PaymentsTab({ payments, renters, reload }: { payments: Payment[]; rente
       ) : (
         <div class="rt-table-wrap">
           <table class="rt-table">
-            <thead><tr><th>Date</th><th>Renter</th><th>Amount</th><th>Status</th><th>Note</th></tr></thead>
+            <thead><tr><th>Date</th><th>Renter</th><th>Amount</th><th>Paid Through</th><th>Status</th><th>Note</th></tr></thead>
             <tbody>
               {[...payments].sort((a,b) => b.date.localeCompare(a.date)).map(p => (
                 <tr key={p.id}>
                   <td>{p.date}</td><td>{renterName(p.renterId)}</td>
                   <td style="font-weight:600">{fmt(p.amount)}</td>
+                  <td style="color:var(--rt-teal);font-weight:500">{p.paidThrough || "—"}</td>
                   <td><span class={`rt-badge ${p.status==="paid"?"rt-badge-success":p.status==="pending"?"rt-badge-warning":"rt-badge-danger"}`}>{p.status}</span></td>
                   <td class="text-dim">{p.note||"—"}</td>
                 </tr>
@@ -250,14 +272,19 @@ function PaymentsTab({ payments, renters, reload }: { payments: Payment[]; rente
           <div class="rt-form">
             <div class="rt-field">
               <label class="rt-label">Renter</label>
-              <select class="rt-select" value={form.renterId} onChange={e => { const id=(e.target as HTMLSelectElement).value; const r=renters.find(x=>x.id===id); setForm(f=>({...f,renterId:id,amount:r?String(r.rentAmount):f.amount})); }}>
+              <select class="rt-select" value={form.renterId} onChange={e => setRenter((e.target as HTMLSelectElement).value)}>
                 <option value="">Select renter...</option>
                 {renters.map(r => <option value={r.id}>{r.name}</option>)}
               </select>
             </div>
             <div class="rt-form-row">
               <div class="rt-field"><label class="rt-label">Amount</label><input class="rt-input" type="number" inputMode="decimal" value={form.amount} onInput={e => setForm(f=>({...f,amount:(e.target as HTMLInputElement).value}))} /></div>
-              <div class="rt-field"><label class="rt-label">Date</label><input class="rt-input" type="date" value={form.date} onInput={e => setForm(f=>({...f,date:(e.target as HTMLInputElement).value}))} /></div>
+              <div class="rt-field"><label class="rt-label">Payment Date</label><input class="rt-input" type="date" value={form.date} onInput={e => setDate((e.target as HTMLInputElement).value)} /></div>
+            </div>
+            <div class="rt-field">
+              <label class="rt-label">Paid Through</label>
+              <input class="rt-input" type="date" value={form.paidThrough} onInput={e => setForm(f=>({...f,paidThrough:(e.target as HTMLInputElement).value}))} />
+              <div style="font-size:12px;color:var(--rt-muted);margin-top:4px">Auto-filled based on renter's frequency — adjust if needed.</div>
             </div>
             <div class="rt-field">
               <label class="rt-label">Status</label>
@@ -541,6 +568,11 @@ function RenterPortal({ renters, properties, payments, allocations, bills, reloa
   const property = renter ? properties.find(p => p.id === renter.propertyId) : null;
   const myPayments = payments.filter(p => p.renterId === renterId);
   const paid = myPayments.filter(p => p.status==="paid").reduce((s,p) => s+p.amount, 0);
+  const paidThrough = myPayments
+    .filter(p => p.status==="paid" && p.paidThrough)
+    .map(p => p.paidThrough)
+    .sort()
+    .at(-1) ?? null;
   const allTotal = allocations.reduce((s,a) => s+a.pct, 0);
   const myBills = renter ? bills.filter(b => b.propertyId === renter.propertyId) : [];
   const handleMarkPaid = async () => {
@@ -629,6 +661,12 @@ function RenterPortal({ renters, properties, payments, allocations, bills, reloa
         <div style="margin-top:16px;display:flex;gap:16px;justify-content:center;flex-wrap:wrap">
           <div class="rt-stat" style="flex:1;min-width:120px"><div class="rt-stat-label">Total Paid</div><div class="rt-stat-value teal" style="font-size:18px">{fmt(paid)}</div></div>
           <div class="rt-stat" style="flex:1;min-width:120px"><div class="rt-stat-label">Payments</div><div class="rt-stat-value" style="font-size:18px">{myPayments.length}</div></div>
+          {paidThrough && (
+            <div class="rt-stat" style="flex:1;min-width:140px">
+              <div class="rt-stat-label">Paid Through</div>
+              <div class="rt-stat-value" style="font-size:16px;color:var(--rt-teal)">{paidThrough}</div>
+            </div>
+          )}
         </div>
       </div>
       {allocations.length > 0 && (
@@ -685,11 +723,12 @@ function RenterPortal({ renters, properties, payments, allocations, bills, reloa
         ) : (
           <div class="rt-table-wrap">
             <table class="rt-table">
-              <thead><tr><th>Date</th><th>Amount</th><th>Status</th><th>Note</th></tr></thead>
+              <thead><tr><th>Date</th><th>Amount</th><th>Paid Through</th><th>Status</th><th>Note</th></tr></thead>
               <tbody>
                 {[...myPayments].sort((a,b)=>b.date.localeCompare(a.date)).map(p => (
                   <tr key={p.id}>
                     <td>{p.date}</td><td style="font-weight:600">{fmt(p.amount)}</td>
+                    <td style="color:var(--rt-teal)">{p.paidThrough || "—"}</td>
                     <td><span class={`rt-badge ${p.status==="paid"?"rt-badge-success":p.status==="pending"?"rt-badge-warning":"rt-badge-danger"}`}>{p.status}</span></td>
                     <td class="text-dim">{p.note||"—"}</td>
                   </tr>
