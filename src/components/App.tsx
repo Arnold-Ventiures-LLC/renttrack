@@ -7,7 +7,7 @@ const API = (entity: string, extra = "") => `${BASE}?entity=${entity}${extra}`;
 const fmt = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const COLORS = ["#00c9a7","#f59e0b","#818cf8","#f43f5e","#34d399","#60a5fa","#fb923c","#e879f9"];
 
-type Property = { id: string; name: string; address: string; units: number };
+type Property = { id: string; name: string; address: string; units: number; unitNames?: string[] };
 type Renter = { id: string; name: string; email: string; phone?: string; propertyId: string; unit: string; rentAmount: number; rentFrequency: "monthly"|"weekly"; dueDay: number; pin?: string; photo?: string };
 type Message = { id: string; renterId: string; renterName: string; propertyId: string; text: string; createdAt: string; isAdmin?: boolean };
 const WEEKDAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
@@ -87,11 +87,26 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
 
 function PropertiesTab({ properties, reload }: { properties: Property[]; reload: () => void }) {
   const [modal, setModal] = useState(false);
-  const [form, setForm] = useState({ name: "", address: "", units: "1" });
+  const [form, setForm] = useState({ name: "", address: "" });
+  const [unitNames, setUnitNames] = useState<string[]>([]);
+  const [unitInput, setUnitInput] = useState("");
+  const addUnit = () => {
+    const v = unitInput.trim();
+    if (!v) return;
+    if (unitNames.includes(v)) { toast("Unit name already added", "error"); return; }
+    setUnitNames(u => [...u, v]);
+    setUnitInput("");
+  };
+  const removeUnit = (i: number) => setUnitNames(u => u.filter((_, idx) => idx !== i));
   const save = async () => {
     if (!form.name || !form.address) { toast("Name and address required", "error"); return; }
-    await post("properties", { ...form, units: parseInt(form.units) || 1 });
-    toast("Property added"); setModal(false); setForm({ name: "", address: "", units: "1" }); reload();
+    await post("properties", { ...form, unitNames, units: unitNames.length || 1 });
+    toast("Property added");
+    setModal(false);
+    setForm({ name: "", address: "" });
+    setUnitNames([]);
+    setUnitInput("");
+    reload();
   };
   const remove = async (id: string) => {
     if (!await confirm("Delete this property? This cannot be undone.")) return;
@@ -115,17 +130,38 @@ function PropertiesTab({ properties, reload }: { properties: Property[]; reload:
               </div>
               <div class="font-bold" style="font-size:15px">{p.name}</div>
               <div class="text-dim text-sm mt-1">{p.address}</div>
-              <div class="text-sm mt-2">{p.units} unit{p.units !== 1 ? "s" : ""}</div>
+              {p.unitNames && p.unitNames.length > 0 ? (
+                <div class="rt-unit-tags mt-2">{p.unitNames.map(u => <span class="rt-unit-tag" key={u}>{u}</span>)}</div>
+              ) : (
+                <div class="text-sm mt-2 text-dim">{p.units} unit{p.units !== 1 ? "s" : ""}</div>
+              )}
             </div>
           ))}
         </div>
       )}
       {modal && (
-        <Modal title="Add Property" onClose={() => setModal(false)}>
+        <Modal title="Add Property" onClose={() => { setModal(false); setUnitNames([]); setUnitInput(""); }}>
           <div class="rt-form">
             <div class="rt-field"><label class="rt-label">Property Name</label><input class="rt-input" value={form.name} onInput={e => setForm(f => ({ ...f, name: (e.target as HTMLInputElement).value }))} placeholder="e.g. Maple Street House" /></div>
             <div class="rt-field"><label class="rt-label">Address</label><input class="rt-input" value={form.address} onInput={e => setForm(f => ({ ...f, address: (e.target as HTMLInputElement).value }))} placeholder="123 Main St, City, WV" /></div>
-            <div class="rt-field"><label class="rt-label">Units</label><input class="rt-input" type="number" inputMode="numeric" value={form.units} onInput={e => setForm(f => ({ ...f, units: (e.target as HTMLInputElement).value }))} /></div>
+            <div class="rt-field">
+              <label class="rt-label">Unit Names</label>
+              <div class="rt-unit-builder">
+                <input class="rt-input" value={unitInput} onInput={e => setUnitInput((e.target as HTMLInputElement).value)} onKeyDown={e => e.key === "Enter" && addUnit()} placeholder="e.g. Front House, Back Cottage, Studio..." />
+                <button class="rt-btn rt-btn-secondary rt-btn-sm" onClick={addUnit} type="button">Add</button>
+              </div>
+              {unitNames.length > 0 && (
+                <div class="rt-unit-tags mt-2">
+                  {unitNames.map((u, i) => (
+                    <span class="rt-unit-tag rt-unit-tag-removable" key={u}>
+                      {u}
+                      <button class="rt-unit-tag-x" onClick={() => removeUnit(i)} type="button">×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {unitNames.length === 0 && <div class="text-dim text-sm mt-1">Add at least one unit name, or leave empty for a single-unit property.</div>}
+            </div>
             <button class="rt-btn rt-btn-primary w-full mt-2" onClick={save}>Save Property</button>
           </div>
         </Modal>
@@ -188,7 +224,21 @@ function RentersTab({ renters, properties, reload }: { renters: Renter[]; proper
               </select>
             </div>
             <div class="rt-form-row">
-              <div class="rt-field"><label class="rt-label">Unit</label><input class="rt-input" value={form.unit} onInput={e => setForm(f => ({ ...f, unit: (e.target as HTMLInputElement).value }))} placeholder="2B" /></div>
+              <div class="rt-field">
+                <label class="rt-label">Unit</label>
+                {(() => {
+                  const selProp = properties.find(p => p.id === form.propertyId);
+                  const names = selProp?.unitNames ?? [];
+                  return names.length > 0 ? (
+                    <select class="rt-select" value={form.unit} onChange={e => setForm(f => ({ ...f, unit: (e.target as HTMLSelectElement).value }))}>
+                      <option value="">Select unit...</option>
+                      {names.map(n => <option value={n} key={n}>{n}</option>)}
+                    </select>
+                  ) : (
+                    <input class="rt-input" value={form.unit} onInput={e => setForm(f => ({ ...f, unit: (e.target as HTMLInputElement).value }))} placeholder="e.g. Unit A, Studio, Back House" />
+                  );
+                })()}
+              </div>
               <div class="rt-field">
                 <label class="rt-label">Frequency</label>
                 <select class="rt-select" value={form.rentFrequency} onChange={e => setForm(f => ({ ...f, rentFrequency: (e.target as HTMLSelectElement).value, dueDay: "1" }))}>
