@@ -43,9 +43,13 @@ export function AiChatWidget() {
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+      if (!data.reply) throw new Error("No reply received");
       setMessages(m => [...m, { role: "assistant", content: data.reply }]);
     } catch (e: any) {
-      setError("Something went wrong. Try again.");
+      const msg = e?.message || "Unknown error";
+      setError(msg.includes("API key not configured")
+        ? "⚠️ OpenAI API key not set in Vercel — add OPENAI_API_KEY to environment variables."
+        : `Error: ${msg}`);
     }
     setLoading(false);
   };
