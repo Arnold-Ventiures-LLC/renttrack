@@ -367,29 +367,81 @@ function AllocationsTab({ allocations, reload }: { allocations: Allocation[]; re
   );
 }
 
-function PayMethodsTab({ payMethods, reload }: { payMethods: PayMethod[]; reload: () => void }) {
-  const [saving, setSaving] = useState<string|null>(null);
-  const getMethod = (key: string) => payMethods.find(m => m.method === key);
+function PayMethodRow({ pm, saved, reload }: {
+  pm: typeof PAY_METHODS[0];
+  saved: PayMethod | undefined;
+  reload: () => void;
+}) {
+  const [localHandle, setLocalHandle] = useState(saved?.handle ?? "");
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const enabled = saved?.enabled ?? false;
+  const hasHandle = !!(saved?.handle);
 
-  const toggle = async (key: string, enabled: boolean) => {
-    const existing = getMethod(key);
-    if (!existing) return;
-    setSaving(key);
-    await apiFetch(`${API("payMethods")}&id=${existing.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) });
-    reload(); setSaving(null);
+  const toggle = async () => {
+    if (!saved) return;
+    await apiFetch(`${API("payMethods")}&id=${saved.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !enabled }) });
+    reload();
   };
 
-  const saveHandle = async (key: string, handle: string) => {
-    const existing = getMethod(key);
-    setSaving(key);
-    if (existing) {
-      await apiFetch(`${API("payMethods")}&id=${existing.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ handle }) });
+  const saveHandle = async () => {
+    if (!localHandle.trim()) return;
+    setSaving(true);
+    if (saved) {
+      await apiFetch(`${API("payMethods")}&id=${saved.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ handle: localHandle.trim() }) });
     } else {
-      await apiFetch(API("payMethods"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ method: key, handle, enabled: true }) });
+      await apiFetch(API("payMethods"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ method: pm.key, handle: localHandle.trim(), enabled: true }) });
     }
-    reload(); setSaving(null); toast("Saved");
+    reload(); setSaving(false); setEditing(false); toast("Saved");
   };
 
+  return (
+    <div class="rt-card" style="padding:14px 16px;margin-bottom:0">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:20px">{pm.icon}</span>
+        <div style="flex:1">
+          <div style="font-weight:600;font-size:14px">{pm.label}</div>
+          {pm.linkTemplate && <div style="font-size:11px;color:var(--rt-muted)">Direct link available</div>}
+        </div>
+        {hasHandle && (
+          <div style="display:flex;align-items:center;gap:6px;font-size:13px">
+            <span style="color:var(--rt-muted)">{enabled?"On":"Off"}</span>
+            <div style={`width:36px;height:20px;border-radius:10px;background:${enabled?"var(--rt-teal)":"rgba(255,255,255,0.15)"};cursor:pointer;position:relative;transition:background 0.2s`} onClick={toggle}>
+              <div style={`position:absolute;top:3px;width:14px;height:14px;border-radius:50%;background:white;transition:left 0.2s;left:${enabled?"19px":"3px"}`} />
+            </div>
+          </div>
+        )}
+        <button class="rt-btn rt-btn-ghost rt-btn-sm" onClick={() => { setLocalHandle(saved?.handle ?? ""); setEditing(e => !e); }}>
+          {editing ? "Cancel" : hasHandle ? "Edit" : "Set Up"}
+        </button>
+      </div>
+      {hasHandle && !editing && (
+        <div style="font-size:13px;color:var(--rt-muted);margin-top:6px;padding-top:8px;border-top:1px solid var(--rt-border)">
+          Handle: <span style="color:var(--rt-text)">{saved!.handle}</span>
+        </div>
+      )}
+      {editing && (
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <input class="rt-input" style="flex:1" placeholder={
+            pm.key==="cashapp" ? "$YourCashTag" :
+            pm.key==="paypal"  ? "YourPayPalUsername" :
+            pm.key==="zelle"   ? "phone or email" :
+            pm.key==="applepay"? "phone number" :
+            pm.key==="chime"   ? "username or phone" : "username or phone"
+          } value={localHandle}
+            onInput={e => setLocalHandle((e.target as HTMLInputElement).value)}
+            onKeyDown={e => { if (e.key==="Enter" && localHandle.trim()) saveHandle(); }}
+          />
+          <button class="rt-btn rt-btn-primary rt-btn-sm" disabled={!localHandle.trim()||saving} onClick={saveHandle}>
+            {saving ? "..." : "Save"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PayMethodsTab({ payMethods, reload }: { payMethods: PayMethod[]; reload: () => void }) {
   return (
     <div>
       <div class="rt-card-header">
@@ -397,55 +449,9 @@ function PayMethodsTab({ payMethods, reload }: { payMethods: PayMethod[]; reload
         <div style="font-size:13px;color:var(--rt-muted)">Configure how renters can pay you</div>
       </div>
       <div style="display:flex;flex-direction:column;gap:12px;margin-top:8px">
-        {PAY_METHODS.map(pm => {
-          const saved = getMethod(pm.key);
-          const [localHandle, setLocalHandle] = useState(saved?.handle ?? "");
-          const [editing, setEditing] = useState(false);
-          const enabled = saved?.enabled ?? false;
-          const hasHandle = !!(saved?.handle);
-          return (
-            <div key={pm.key} class="rt-card" style="padding:14px 16px;margin-bottom:0">
-              <div style="display:flex;align-items:center;gap:10px;margin-bottom:hasHandle&&!editing?8px:0">
-                <span style="font-size:20px">{pm.icon}</span>
-                <div style="flex:1">
-                  <div style="font-weight:600;font-size:14px">{pm.label}</div>
-                  {pm.linkTemplate && <div style="font-size:11px;color:var(--rt-muted)">Direct link available</div>}
-                </div>
-                {hasHandle && (
-                  <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
-                    <span style="color:var(--rt-muted)">{enabled?"On":"Off"}</span>
-                    <div style={`width:36px;height:20px;border-radius:10px;background:${enabled?"var(--rt-teal)":"rgba(255,255,255,0.15)"};cursor:pointer;position:relative;transition:background 0.2s`}
-                      onClick={() => toggle(pm.key, !enabled)}>
-                      <div style={`position:absolute;top:3px;width:14px;height:14px;border-radius:50%;background:white;transition:left 0.2s;left:${enabled?"19px":"3px"}`} />
-                    </div>
-                  </label>
-                )}
-                <button class="rt-btn rt-btn-ghost rt-btn-sm" onClick={() => { setLocalHandle(saved?.handle ?? ""); setEditing(e => !e); }}>
-                  {editing ? "Cancel" : hasHandle ? "Edit" : "Set Up"}
-                </button>
-              </div>
-              {hasHandle && !editing && (
-                <div style="font-size:13px;color:var(--rt-muted);margin-top:6px;padding-top:8px;border-top:1px solid var(--rt-border)">
-                  Handle: <span style="color:var(--rt-text)">{saved!.handle}</span>
-                </div>
-              )}
-              {editing && (
-                <div style="margin-top:10px;display:flex;gap:8px">
-                  <input class="rt-input" style="flex:1" placeholder={
-                    pm.key==="cashapp" ? "$YourCashTag" :
-                    pm.key==="paypal"  ? "YourPayPalUsername" :
-                    pm.key==="zelle"   ? "phone or email" :
-                    pm.key==="applepay"? "phone number" :
-                    pm.key==="chime"   ? "username or phone" : "username or phone"
-                  } value={localHandle} onInput={e => setLocalHandle((e.target as HTMLInputElement).value)} onKeyDown={e => { if(e.key==="Enter"&&localHandle.trim()) saveHandle(pm.key, localHandle.trim()); }} />
-                  <button class="rt-btn rt-btn-primary rt-btn-sm" disabled={!localHandle.trim()||saving===pm.key} onClick={() => saveHandle(pm.key, localHandle.trim())}>
-                    {saving===pm.key ? "..." : "Save"}
-                  </button>
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {PAY_METHODS.map(pm => (
+          <PayMethodRow key={pm.key} pm={pm} saved={payMethods.find(m => m.method === pm.key)} reload={reload} />
+        ))}
       </div>
     </div>
   );
