@@ -201,7 +201,20 @@ function PropertiesTab({ properties, reload }: { properties: Property[]; reload:
 
 function RentersTab({ renters, properties, reload }: { renters: Renter[]; properties: Property[]; reload: () => void }) {
   const [modal, setModal] = useState(false);
+  const [editRenter, setEditRenter] = useState<Renter | null>(null);
+  const [editForm, setEditForm] = useState({ name: "", email: "", phone: "", propertyId: "", unit: "", rentAmount: "", rentFrequency: "monthly", dueDay: "1", pin: "" });
   const [form, setForm] = useState({ name: "", email: "", propertyId: "", unit: "", rentAmount: "", rentFrequency: "monthly", dueDay: "1", pin: "" });
+  const openEdit = (r: Renter) => {
+    setEditRenter(r);
+    setEditForm({ name: r.name, email: r.email || "", phone: r.phone || "", propertyId: r.propertyId, unit: r.unit || "", rentAmount: String(r.rentAmount), rentFrequency: r.rentFrequency || "monthly", dueDay: String(r.dueDay || 1), pin: r.pin || "" });
+  };
+  const saveEdit = async () => {
+    if (!editRenter) return;
+    if (!editForm.name || !editForm.propertyId || !editForm.rentAmount) { toast("Name, property, and rent required", "error"); return; }
+    if (editForm.pin && (editForm.pin.length !== 4 || !/^\d{4}$/.test(editForm.pin))) { toast("PIN must be exactly 4 digits", "error"); return; }
+    await apiFetch(`${API("renters")}&id=${editRenter.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...editRenter, ...editForm, rentAmount: parseFloat(editForm.rentAmount), dueDay: parseInt(editForm.dueDay), pin: editForm.pin || null }) });
+    toast("Renter updated"); setEditRenter(null); reload();
+  };
   const save = async () => {
     if (!form.name || !form.propertyId || !form.rentAmount) { toast("Name, property, and rent required", "error"); return; }
     if (form.pin && (form.pin.length !== 4 || !/^\d{4}$/.test(form.pin))) { toast("PIN must be exactly 4 digits", "error"); return; }
@@ -233,7 +246,12 @@ function RentersTab({ renters, properties, reload }: { renters: Renter[]; proper
                   <td style="text-transform:capitalize">{r.rentFrequency || "monthly"}</td>
                   <td>{(r.rentFrequency==="weekly") ? WEEKDAYS[(r.dueDay||1)-1] : `Day ${r.dueDay}`}</td>
                   <td>{r.pin ? "••••" : <span class="text-dim">None</span>}</td>
-                  <td><button class="rt-btn rt-btn-danger rt-btn-sm" onClick={() => remove(r.id)}>Remove</button></td>
+                  <td>
+                    <div class="flex gap-2">
+                      <button class="rt-btn rt-btn-secondary rt-btn-sm" onClick={() => openEdit(r)}>Edit</button>
+                      <button class="rt-btn rt-btn-danger rt-btn-sm" onClick={() => remove(r.id)}>Remove</button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -305,6 +323,66 @@ function RentersTab({ renters, properties, reload }: { renters: Renter[]; proper
           </div>
         </Modal>
       )}
+      {editRenter && (
+        <Modal title={`Edit Renter — ${editRenter.name}`} onClose={() => setEditRenter(null)}>
+          <div class="rt-form">
+            <div class="rt-form-row">
+              <div class="rt-field"><label class="rt-label">Full Name</label><input class="rt-input" value={editForm.name} onInput={e => setEditForm(f => ({ ...f, name: (e.target as HTMLInputElement).value }))} /></div>
+              <div class="rt-field"><label class="rt-label">Phone</label><input class="rt-input" type="tel" value={editForm.phone} onInput={e => setEditForm(f => ({ ...f, phone: (e.target as HTMLInputElement).value }))} placeholder="(304) 555-0100" /></div>
+            </div>
+            <div class="rt-field"><label class="rt-label">Email</label><input class="rt-input" type="email" value={editForm.email} onInput={e => setEditForm(f => ({ ...f, email: (e.target as HTMLInputElement).value }))} /></div>
+            <div class="rt-field">
+              <label class="rt-label">Property</label>
+              <select class="rt-select" value={editForm.propertyId} onChange={e => setEditForm(f => ({ ...f, propertyId: (e.target as HTMLSelectElement).value, unit: "" }))}>
+                {properties.map(p => <option value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <div class="rt-form-row">
+              <div class="rt-field">
+                <label class="rt-label">Unit</label>
+                {(() => {
+                  const selProp = properties.find(p => p.id === editForm.propertyId);
+                  const names = selProp?.unitNames ?? [];
+                  return names.length > 0 ? (
+                    <select class="rt-select" value={editForm.unit} onChange={e => setEditForm(f => ({ ...f, unit: (e.target as HTMLSelectElement).value }))}>
+                      <option value="">Select unit...</option>
+                      {names.map(n => <option value={n} key={n}>{n}</option>)}
+                    </select>
+                  ) : (
+                    <input class="rt-input" value={editForm.unit} onInput={e => setEditForm(f => ({ ...f, unit: (e.target as HTMLInputElement).value }))} />
+                  );
+                })()}
+              </div>
+              <div class="rt-field">
+                <label class="rt-label">Frequency</label>
+                <select class="rt-select" value={editForm.rentFrequency} onChange={e => setEditForm(f => ({ ...f, rentFrequency: (e.target as HTMLSelectElement).value, dueDay: "1" }))}>
+                  <option value="monthly">Monthly</option>
+                  <option value="weekly">Weekly</option>
+                </select>
+              </div>
+            </div>
+            <div class="rt-form-row">
+              <div class="rt-field" style="flex:2"><label class="rt-label">Rent Amount</label><input class="rt-input" type="number" inputMode="decimal" value={editForm.rentAmount} onInput={e => setEditForm(f => ({ ...f, rentAmount: (e.target as HTMLInputElement).value }))} /></div>
+              <div class="rt-field" style="flex:1">
+                {editForm.rentFrequency === "weekly" ? (
+                  <><label class="rt-label">Due Day</label>
+                  <select class="rt-select" value={editForm.dueDay} onChange={e => setEditForm(f => ({ ...f, dueDay: (e.target as HTMLSelectElement).value }))}>
+                    {WEEKDAYS.map((d,i) => <option value={String(i+1)}>{d}</option>)}
+                  </select></>
+                ) : (
+                  <><label class="rt-label">Due Day</label>
+                  <input class="rt-input" type="number" inputMode="numeric" value={editForm.dueDay} min="1" max="31" onInput={e => setEditForm(f => ({ ...f, dueDay: (e.target as HTMLInputElement).value }))} /></>
+                )}
+              </div>
+            </div>
+            <div class="rt-field">
+              <label class="rt-label">Portal PIN <span style="font-weight:400;opacity:0.6">(4 digits)</span></label>
+              <input class="rt-input" type="password" inputMode="numeric" maxLength={4} value={editForm.pin} onInput={e => setEditForm(f => ({ ...f, pin: (e.target as HTMLInputElement).value }))} placeholder="Leave blank to clear" />
+            </div>
+            <button class="rt-btn rt-btn-primary w-full mt-2" onClick={saveEdit}>Save Changes</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -312,7 +390,23 @@ function RentersTab({ renters, properties, reload }: { renters: Renter[]; proper
 function PaymentsTab({ payments, renters, reload }: { payments: Payment[]; renters: Renter[]; reload: () => void }) {
   const today = new Date().toISOString().slice(0,10);
   const [modal, setModal] = useState(false);
+  const [editPayment, setEditPayment] = useState<Payment | null>(null);
+  const [editForm, setEditForm] = useState({ renterId: "", amount: "", date: today, paidThrough: "", status: "paid", note: "" });
   const [form, setForm] = useState({ renterId: "", amount: "", date: today, paidThrough: "", status: "paid", note: "" });
+  const openEditPayment = (p: Payment) => {
+    setEditPayment(p);
+    setEditForm({ renterId: p.renterId, amount: String(p.amount), date: p.date, paidThrough: p.paidThrough || "", status: p.status, note: p.note || "" });
+  };
+  const saveEditPayment = async () => {
+    if (!editPayment) return;
+    if (!editForm.renterId || !editForm.amount) { toast("Renter and amount required", "error"); return; }
+    await apiFetch(`${API("payments")}&id=${editPayment.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...editPayment, ...editForm, amount: parseFloat(editForm.amount) }) });
+    toast("Payment updated"); setEditPayment(null); reload();
+  };
+  const removePayment = async (id: string) => {
+    if (!await confirm("Delete this payment entry?")) return;
+    await del("payments", id); reload(); toast("Removed");
+  };
   const setRenter = (id: string) => {
     const r = renters.find(x => x.id === id);
     setForm(f => ({ ...f, renterId: id, amount: r ? String(r.rentAmount) : f.amount, paidThrough: paidThroughDefault(r, f.date) }));
@@ -345,7 +439,7 @@ function PaymentsTab({ payments, renters, reload }: { payments: Payment[]; rente
       ) : (
         <div class="rt-table-wrap">
           <table class="rt-table">
-            <thead><tr><th>Date</th><th>Renter</th><th>Amount</th><th>Paid Through</th><th>Status</th><th>Note</th></tr></thead>
+            <thead><tr><th>Date</th><th>Renter</th><th>Amount</th><th>Paid Through</th><th>Status</th><th>Note</th><th></th></tr></thead>
             <tbody>
               {[...payments].sort((a,b) => b.date.localeCompare(a.date)).map(p => (
                 <tr key={p.id}>
@@ -354,6 +448,12 @@ function PaymentsTab({ payments, renters, reload }: { payments: Payment[]; rente
                   <td style="color:var(--rt-teal);font-weight:500">{p.paidThrough || "—"}</td>
                   <td><span class={`rt-badge ${p.status==="paid"?"rt-badge-success":p.status==="pending"?"rt-badge-warning":"rt-badge-danger"}`}>{p.status}</span></td>
                   <td class="text-dim">{p.note||"—"}</td>
+                  <td>
+                    <div class="flex gap-2">
+                      <button class="rt-btn rt-btn-secondary rt-btn-sm" onClick={() => openEditPayment(p)}>Edit</button>
+                      <button class="rt-btn rt-btn-danger rt-btn-sm" onClick={() => removePayment(p.id)}>Delete</button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -387,6 +487,34 @@ function PaymentsTab({ payments, renters, reload }: { payments: Payment[]; rente
             </div>
             <div class="rt-field"><label class="rt-label">Note</label><input class="rt-input" value={form.note} onInput={e => setForm(f=>({...f,note:(e.target as HTMLInputElement).value}))} placeholder="e.g. Venmo transfer" /></div>
             <button class="rt-btn rt-btn-primary w-full mt-2" onClick={save}>Save Payment</button>
+          </div>
+        </Modal>
+      )}
+      {editPayment && (
+        <Modal title="Edit Payment" onClose={() => setEditPayment(null)}>
+          <div class="rt-form">
+            <div class="rt-field">
+              <label class="rt-label">Renter</label>
+              <select class="rt-select" value={editForm.renterId} onChange={e => setEditForm(f => ({ ...f, renterId: (e.target as HTMLSelectElement).value }))}>
+                {renters.map(r => <option value={r.id}>{r.name}</option>)}
+              </select>
+            </div>
+            <div class="rt-form-row">
+              <div class="rt-field"><label class="rt-label">Amount</label><input class="rt-input" type="number" inputMode="decimal" value={editForm.amount} onInput={e => setEditForm(f => ({ ...f, amount: (e.target as HTMLInputElement).value }))} /></div>
+              <div class="rt-field"><label class="rt-label">Payment Date</label><input class="rt-input" type="date" value={editForm.date} onInput={e => setEditForm(f => ({ ...f, date: (e.target as HTMLInputElement).value }))} /></div>
+            </div>
+            <div class="rt-field">
+              <label class="rt-label">Paid Through</label>
+              <input class="rt-input" type="date" value={editForm.paidThrough} onInput={e => setEditForm(f => ({ ...f, paidThrough: (e.target as HTMLInputElement).value }))} />
+            </div>
+            <div class="rt-field">
+              <label class="rt-label">Status</label>
+              <select class="rt-select" value={editForm.status} onChange={e => setEditForm(f => ({ ...f, status: (e.target as HTMLSelectElement).value }))}>
+                <option value="paid">Paid</option><option value="pending">Pending</option><option value="late">Late</option>
+              </select>
+            </div>
+            <div class="rt-field"><label class="rt-label">Note</label><input class="rt-input" value={editForm.note} onInput={e => setEditForm(f => ({ ...f, note: (e.target as HTMLInputElement).value }))} placeholder="e.g. Venmo transfer" /></div>
+            <button class="rt-btn rt-btn-primary w-full mt-2" onClick={saveEditPayment}>Save Changes</button>
           </div>
         </Modal>
       )}
