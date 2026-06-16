@@ -226,9 +226,10 @@ function RentersTab({ renters, properties, reload }: { renters: Renter[]; proper
     await del("renters", id); reload(); toast("Removed");
   };
   const propName = (id: string) => properties.find(p => p.id === id)?.name ?? "—";
-  const weeklyTotal  = renters.filter(r => r.rentFrequency === "weekly").reduce((s, r) => s + r.rentAmount, 0);
-  const monthlyTotal = renters.filter(r => r.rentFrequency !== "weekly").reduce((s, r) => s + r.rentAmount, 0);
-  const bestCase     = (weeklyTotal * 52) + (monthlyTotal * 12);
+  const weeklyTotal    = renters.filter(r => r.rentFrequency === "weekly").reduce((s, r) => s + r.rentAmount, 0);
+  const monthlyTotal   = renters.filter(r => r.rentFrequency !== "weekly").reduce((s, r) => s + r.rentAmount, 0);
+  const bestCaseMonth  = monthlyTotal + (weeklyTotal * 4);
+  const bestCase       = (weeklyTotal * 52) + (monthlyTotal * 12);
   return (
     <div>
       <div class="rt-card-header">
@@ -244,6 +245,10 @@ function RentersTab({ renters, properties, reload }: { renters: Renter[]; proper
           <div class="rt-stat">
             <div class="rt-stat-label">Monthly Rent</div>
             <div class="rt-stat-value teal">{fmt(monthlyTotal)}</div>
+          </div>
+          <div class="rt-stat">
+            <div class="rt-stat-label">Best Case / Month</div>
+            <div class="rt-stat-value amber">{fmt(bestCaseMonth)}</div>
           </div>
           <div class="rt-stat">
             <div class="rt-stat-label">Best Case / Year</div>
