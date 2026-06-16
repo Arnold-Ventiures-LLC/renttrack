@@ -1040,13 +1040,25 @@ function AdminPanel({ onExit }: { onExit: () => void }) {
   const [payMethods,,reloadPayMethods] = useData<PayMethod>("payMethods");
   const [messages,,reloadMessages] = useData<Message>("messages");
   const [tab, setTab] = useState("properties");
+  const [reloading, setReloading] = useState(false);
+  const reloadAll = async () => {
+    setReloading(true);
+    await Promise.all([reloadProps(), reloadRenters(), reloadPayments(), reloadAllocs(), reloadBills(), reloadPayMethods(), reloadMessages()]);
+    setReloading(false);
+    toast("Data refreshed");
+  };
+  const logout = () => { onExit(); };
   return (
     <div>
       <div class="rt-tabs" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
         {[["properties","🏘️ Properties"],["renters","👤 Renters"],["payments","💳 Payments"],["allocations","🥧 Allocations"],["bills","🧾 Bills"],["paymethods","💸 Pay Methods"],["chat","💬 Chat"]].map(([id,label]) => (
           <button key={id} class={`rt-tab${tab===id?" active":""}`} onClick={() => setTab(id)}>{label}</button>
         ))}
-        <button class="rt-btn rt-btn-ghost rt-btn-sm" style="margin-left:auto;white-space:nowrap" onClick={onExit}>← Renter Portal</button>
+        <div class="flex gap-2" style="margin-left:auto">
+          <button class="rt-btn rt-btn-ghost rt-btn-sm" onClick={reloadAll} disabled={reloading} title="Reload all data">{reloading ? "⏳" : "🔄 Reload"}</button>
+          <button class="rt-btn rt-btn-ghost rt-btn-sm" style="white-space:nowrap;opacity:0.7" onClick={onExit}>← Renter Portal</button>
+          <button class="rt-btn rt-btn-danger rt-btn-sm" style="white-space:nowrap" onClick={logout}>Logout</button>
+        </div>
       </div>
       {tab==="properties" && <PropertiesTab properties={properties} reload={reloadProps} />}
       {tab==="renters" && <RentersTab renters={renters} properties={properties} reload={reloadRenters} />}
