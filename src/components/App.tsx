@@ -8,7 +8,7 @@ const fmt = (n: number) => "$" + n.toLocaleString("en-US", { minimumFractionDigi
 const COLORS = ["#00c9a7","#f59e0b","#818cf8","#f43f5e","#34d399","#60a5fa","#fb923c","#e879f9"];
 
 type Property = { id: string; name: string; address: string; units: number; unitNames?: string[] };
-type Renter = { id: string; name: string; email: string; phone?: string; propertyId: string; unit: string; rentAmount: number; rentFrequency: "monthly"|"weekly"; dueDay: number; pin?: string; photo?: string; rentBreakdown?: string };
+type Renter = { id: string; name: string; email: string; phone?: string; propertyId: string; unit: string; rentAmount: number; rentFrequency: "monthly"|"weekly"; dueDay: number; pin?: string; photo?: string; rentBreakdown?: string; balanceAdjustment?: number; leaseUrl?: string; leaseName?: string };
 type Message = { id: string; renterId: string; renterName: string; propertyId: string; text: string; createdAt: string; isAdmin?: boolean };
 const WEEKDAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
 type Payment = { id: string; renterId: string; amount: number; date: string; paidThrough: string; status: "paid"|"pending"|"late"; note: string };
@@ -29,6 +29,8 @@ function paidThroughDefault(renter: Renter | undefined, payDate: string): string
 type Allocation = { id: string; label: string; pct: number; color: string };
 type Bill = { id: string; name: string; propertyId: string; amount: number; dueDate: string; frequency: string; status: "paid"|"pending"|"overdue"; notes: string; confirmationNumber?: string; documentUrl?: string; documentName?: string };
 type PayMethod = { id: string; method: string; handle: string; enabled: boolean };
+type Announcement = { id: string; title: string; text: string; author: string; propertyId?: string; priority: "normal"|"important"; createdAt: string };
+type HouseDocument = { id: string; title: string; documentUrl: string; documentName: string; createdAt: string };
 
 const PAY_METHODS: { key: string; label: string; icon: string; linkTemplate?: (h: string) => string; instructions: (h: string) => string }[] = [
   { key: "cashapp",  label: "Cash App",  icon: "💚", linkTemplate: h => `https://cash.app/${h}`,    instructions: h => `Open Cash App → tap $ → search ${h}` },
@@ -50,6 +52,54 @@ function toast(msg: string, type: "success"|"error"|"info" = "success") {
 async function apiFetch(url: string, opts?: RequestInit) {
   const r = await fetch(url, opts);
   return r;
+}
+
+async function uploadPdf(file: File) {
+  if (file.size > 4 * 1024 * 1024) throw new Error("File too large — max 4MB");
+  const data = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve((reader.result as string).split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+  const response = await apiFetch("/api/upload-bill", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: file.name, mimeType: file.type || "application/pdf", data }),
+  });
+  const result = await response.json();
+  if (!response.ok || !result.url) throw new Error(result.error || "Upload failed");
+  return { url: result.url as string, name: file.name };
+}
+
+function rentPosition(renter: Renter, payments: Payment[]) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let start: Date;
+  let end: Date;
+  if (renter.rentFrequency === "weekly") {
+    const dueWeekday = Math.max(0, Math.min(6, (renter.dueDay || 1) - 1));
+    start = new Date(today);
+    start.setDate(start.getDate() - ((start.getDay() - dueWeekday + 7) % 7));
+    end = new Date(start);
+    end.setDate(end.getDate() + 6);
+  } else {
+    const dueDay = Math.max(1, Math.min(28, renter.dueDay || 1));
+    start = new Date(today.getFullYear(), today.getMonth(), dueDay);
+    if (today < start) start = new Date(today.getFullYear(), today.getMonth() - 1, dueDay);
+    end = new Date(start.getFullYear(), start.getMonth() + 1, dueDay - 1);
+  }
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const startIso = iso(start);
+  const endIso = iso(end);
+  const paidThisPeriod = payments
+    .filter(p => p.status === "paid" && p.date >= startIso && p.date <= endIso)
+    .reduce((sum, p) => sum + p.amount, 0);
+  const coveredThroughPeriod = payments.some(p => p.status === "paid" && p.paidThrough && p.paidThrough >= endIso);
+  const credited = coveredThroughPeriod ? Math.max(paidThisPeriod, renter.rentAmount) : paidThisPeriod;
+  const adjustment = Number(renter.balanceAdjustment || 0);
+  const owed = Math.max(0, renter.rentAmount + adjustment - credited);
+  return { startIso, endIso, credited, adjustment, owed };
 }
 
 function useData<T>(entity: string) {
@@ -202,17 +252,30 @@ function PropertiesTab({ properties, reload }: { properties: Property[]; reload:
 function RentersTab({ renters, properties, reload }: { renters: Renter[]; properties: Property[]; reload: () => void }) {
   const [modal, setModal] = useState(false);
   const [editRenter, setEditRenter] = useState<Renter | null>(null);
-  const [editForm, setEditForm] = useState({ name: "", email: "", phone: "", propertyId: "", unit: "", rentAmount: "", rentFrequency: "monthly", dueDay: "1", pin: "", rentBreakdown: "" });
+  const [leaseUploading, setLeaseUploading] = useState(false);
+  const [editForm, setEditForm] = useState({ name: "", email: "", phone: "", propertyId: "", unit: "", rentAmount: "", rentFrequency: "monthly", dueDay: "1", pin: "", rentBreakdown: "", balanceAdjustment: "0", leaseUrl: "", leaseName: "" });
   const [form, setForm] = useState({ name: "", email: "", propertyId: "", unit: "", rentAmount: "", rentFrequency: "monthly", dueDay: "1", pin: "" });
   const openEdit = (r: Renter) => {
     setEditRenter(r);
-    setEditForm({ name: r.name, email: r.email || "", phone: r.phone || "", propertyId: r.propertyId, unit: r.unit || "", rentAmount: String(r.rentAmount), rentFrequency: r.rentFrequency || "monthly", dueDay: String(r.dueDay || 1), pin: r.pin || "", rentBreakdown: r.rentBreakdown || "" });
+    setEditForm({ name: r.name, email: r.email || "", phone: r.phone || "", propertyId: r.propertyId, unit: r.unit || "", rentAmount: String(r.rentAmount), rentFrequency: r.rentFrequency || "monthly", dueDay: String(r.dueDay || 1), pin: r.pin || "", rentBreakdown: r.rentBreakdown || "", balanceAdjustment: String(r.balanceAdjustment || 0), leaseUrl: r.leaseUrl || "", leaseName: r.leaseName || "" });
+  };
+  const uploadLease = async (file: File) => {
+    setLeaseUploading(true);
+    try {
+      const uploaded = await uploadPdf(file);
+      setEditForm(f => ({ ...f, leaseUrl: uploaded.url, leaseName: uploaded.name }));
+      toast("Lease uploaded ✓");
+    } catch (e: any) {
+      toast(e?.message || "Lease upload failed", "error");
+    } finally {
+      setLeaseUploading(false);
+    }
   };
   const saveEdit = async () => {
     if (!editRenter) return;
     if (!editForm.name || !editForm.propertyId || !editForm.rentAmount) { toast("Name, property, and rent required", "error"); return; }
     if (editForm.pin && (editForm.pin.length !== 4 || !/^\d{4}$/.test(editForm.pin))) { toast("PIN must be exactly 4 digits", "error"); return; }
-    await apiFetch(`${API("renters")}&id=${editRenter.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...editRenter, ...editForm, rentAmount: parseFloat(editForm.rentAmount), dueDay: parseInt(editForm.dueDay), pin: editForm.pin || null }) });
+    await apiFetch(`${API("renters")}&id=${editRenter.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...editRenter, ...editForm, rentAmount: parseFloat(editForm.rentAmount), dueDay: parseInt(editForm.dueDay), balanceAdjustment: parseFloat(editForm.balanceAdjustment) || 0, pin: editForm.pin || null }) });
     toast("Renter updated"); setEditRenter(null); reload();
   };
   const save = async () => {
@@ -402,6 +465,24 @@ function RentersTab({ renters, properties, reload }: { renters: Renter[]; proper
             <div class="rt-field">
               <label class="rt-label">Portal PIN <span style="font-weight:400;opacity:0.6">(4 digits)</span></label>
               <input class="rt-input" type="password" inputMode="numeric" maxLength={4} value={editForm.pin} onInput={e => setEditForm(f => ({ ...f, pin: (e.target as HTMLInputElement).value }))} placeholder="Leave blank to clear" />
+            </div>
+            <div class="rt-field">
+              <label class="rt-label">Prior Balance / Credit</label>
+              <input class="rt-input" type="number" inputMode="decimal" value={editForm.balanceAdjustment} onInput={e => setEditForm(f => ({ ...f, balanceAdjustment: (e.target as HTMLInputElement).value }))} />
+              <div class="text-dim text-sm">Use a positive number for past-due rent or a negative number for renter credit.</div>
+            </div>
+            <div class="rt-field">
+              <label class="rt-label">Lease Copy <span style="font-weight:400;opacity:0.6">(PDF, visible only in this renter profile)</span></label>
+              <label class="rt-btn rt-btn-ghost upload-label">
+                {leaseUploading ? "Uploading…" : editForm.leaseUrl ? "Replace Lease PDF" : "Upload Lease PDF"}
+                <input type="file" accept="application/pdf" style="display:none" disabled={leaseUploading} onChange={e => { const file=(e.target as HTMLInputElement).files?.[0]; if(file) uploadLease(file); }} />
+              </label>
+              {editForm.leaseUrl && (
+                <div class="rt-document-row">
+                  <a href={editForm.leaseUrl} target="_blank" rel="noopener noreferrer" class="rt-doc-link">📄 {editForm.leaseName || "View lease"}</a>
+                  <button class="rt-btn rt-btn-danger rt-btn-sm" type="button" onClick={() => setEditForm(f => ({ ...f, leaseUrl: "", leaseName: "" }))}>Remove</button>
+                </div>
+              )}
             </div>
             <div class="rt-field">
               <label class="rt-label">Rent Breakdown / Notes <span style="font-weight:400;opacity:0.6">(visible to renter)</span></label>
@@ -721,11 +802,13 @@ function BillsTab({ bills, properties, reload }: { bills: Bill[]; properties: Pr
         r.onerror = rej;
         r.readAsDataURL(file);
       });
-      const result = await apiFetch("/api/upload-bill", {
+      const response = await apiFetch("/api/upload-bill", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: file.name, mimeType: file.type || "application/pdf", data: base64 }),
       });
+      const result = await response.json();
+      if (!response.ok || !result.url) throw new Error(result.error || "Upload failed");
       await apiFetch(`${API("bills")}&id=${bill.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -1101,6 +1184,103 @@ function AdminAuth({ onUnlock }: { onUnlock: () => void }) {
   );
 }
 
+function AnnouncementBoard({ announcements, reload, author, propertyId, admin = false }: { announcements: Announcement[]; reload: () => void; author: string; propertyId?: string; admin?: boolean }) {
+  const [title, setTitle] = useState("");
+  const [text, setText] = useState("");
+  const [priority, setPriority] = useState<"normal"|"important">("normal");
+  const visible = announcements
+    .filter(a => admin || !a.propertyId || a.propertyId === propertyId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const publish = async () => {
+    if (!title.trim() || !text.trim()) { toast("Add a title and announcement", "error"); return; }
+    await post("announcements", { title: title.trim(), text: text.trim(), priority, author, propertyId: propertyId || "" });
+    setTitle(""); setText(""); setPriority("normal"); reload(); toast("Announcement posted");
+  };
+  const remove = async (id: string) => {
+    if (!await confirm("Remove this announcement?")) return;
+    await del("announcements", id); reload(); toast("Announcement removed");
+  };
+  return (
+    <div class="rt-bulletin">
+      <div class="rt-card">
+        <div class="rt-card-title" style="margin-bottom:14px">📌 Post to the House Bulletin</div>
+        <div class="rt-form">
+          <input class="rt-input" value={title} onInput={e => setTitle((e.target as HTMLInputElement).value)} placeholder="Announcement title" />
+          <textarea class="rt-input rt-textarea" value={text} onInput={e => setText((e.target as HTMLTextAreaElement).value)} placeholder="Share an update with the house…" />
+          <div class="flex gap-2 justify-between items-center" style="flex-wrap:wrap">
+            <select class="rt-select rt-priority-select" value={priority} onChange={e => setPriority((e.target as HTMLSelectElement).value as "normal"|"important")}>
+              <option value="normal">Normal</option>
+              <option value="important">Important</option>
+            </select>
+            <button class="rt-btn rt-btn-primary" onClick={publish}>Post Announcement</button>
+          </div>
+        </div>
+      </div>
+      <div class="rt-announcement-list">
+        {visible.length === 0 ? <div class="rt-empty"><div class="rt-empty-icon">📌</div><div>No announcements yet.</div></div> : visible.map(a => (
+          <article class={`rt-announcement ${a.priority === "important" ? "important" : ""}`} key={a.id}>
+            <div class="flex justify-between gap-2 items-center">
+              <div class="rt-announcement-title">{a.title}</div>
+              {a.priority === "important" && <span class="rt-badge rt-badge-warning">Important</span>}
+            </div>
+            <div class="rt-announcement-text">{a.text}</div>
+            <div class="rt-announcement-meta">
+              Posted by {a.author || "House participant"} · {new Date(a.createdAt).toLocaleString()}
+              {admin && <button class="rt-link-button" onClick={() => remove(a.id)}>Remove</button>}
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DocumentsTab({ documents, reload }: { documents: HouseDocument[]; reload: () => void }) {
+  const [title, setTitle] = useState("Banned Person Form");
+  const [uploading, setUploading] = useState(false);
+  const upload = async (file: File) => {
+    setUploading(true);
+    try {
+      const uploaded = await uploadPdf(file);
+      await post("documents", { title: title.trim() || "House Document", documentUrl: uploaded.url, documentName: uploaded.name });
+      reload(); toast("House document uploaded ✓");
+    } catch (e: any) {
+      toast(e?.message || "Upload failed", "error");
+    } finally {
+      setUploading(false);
+    }
+  };
+  const remove = async (id: string) => {
+    if (!await confirm("Remove this document from the portal?")) return;
+    await del("documents", id); reload(); toast("Document removed");
+  };
+  return (
+    <div>
+      <div class="rt-card" style="margin-bottom:18px">
+        <div class="rt-card-title" style="margin-bottom:14px">House Documents</div>
+        <div class="rt-form-row">
+          <input class="rt-input" value={title} onInput={e => setTitle((e.target as HTMLInputElement).value)} placeholder="Document title" />
+          <label class="rt-btn rt-btn-primary upload-label">
+            {uploading ? "Uploading…" : "Upload PDF"}
+            <input type="file" accept="application/pdf" style="display:none" disabled={uploading} onChange={e => { const file=(e.target as HTMLInputElement).files?.[0]; if(file) upload(file); }} />
+          </label>
+        </div>
+      </div>
+      <div class="rt-document-list">
+        {documents.length === 0 ? <div class="rt-empty">No shared documents uploaded yet.</div> : documents.map(d => (
+          <div class="rt-document-row rt-card" key={d.id}>
+            <div><div class="font-bold">{d.title}</div><div class="text-dim text-sm">{d.documentName}</div></div>
+            <div class="flex gap-2">
+              <a href={d.documentUrl} target="_blank" rel="noopener noreferrer" class="rt-btn rt-btn-ghost rt-btn-sm" style="text-decoration:none">View PDF</a>
+              <button class="rt-btn rt-btn-danger rt-btn-sm" onClick={() => remove(d.id)}>Remove</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AdminPanel({ onExit }: { onExit: () => void }) {
   const [properties,,reloadProps] = useData<Property>("properties");
   const [renters,,reloadRenters] = useData<Renter>("renters");
@@ -1109,11 +1289,13 @@ function AdminPanel({ onExit }: { onExit: () => void }) {
   const [bills,,reloadBills] = useData<Bill>("bills");
   const [payMethods,,reloadPayMethods] = useData<PayMethod>("payMethods");
   const [messages,,reloadMessages] = useData<Message>("messages");
+  const [announcements,,reloadAnnouncements] = useData<Announcement>("announcements");
+  const [documents,,reloadDocuments] = useData<HouseDocument>("documents");
   const [tab, setTab] = useState("properties");
   const [reloading, setReloading] = useState(false);
   const reloadAll = async () => {
     setReloading(true);
-    await Promise.all([reloadProps(), reloadRenters(), reloadPayments(), reloadAllocs(), reloadBills(), reloadPayMethods(), reloadMessages()]);
+    await Promise.all([reloadProps(), reloadRenters(), reloadPayments(), reloadAllocs(), reloadBills(), reloadPayMethods(), reloadMessages(), reloadAnnouncements(), reloadDocuments()]);
     setReloading(false);
     toast("Data refreshed");
   };
@@ -1121,7 +1303,7 @@ function AdminPanel({ onExit }: { onExit: () => void }) {
   return (
     <div>
       <div class="rt-tabs" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
-        {[["properties","🏘️ Properties"],["renters","👤 Renters"],["payments","💳 Payments"],["allocations","🥧 Allocations"],["bills","🧾 Bills"],["paymethods","💸 Pay Methods"],["chat","💬 Chat"]].map(([id,label]) => (
+        {[["properties","🏘️ Properties"],["renters","👤 Renters"],["payments","💳 Payments"],["bulletin","📌 Bulletin"],["documents","📄 Documents"],["allocations","🥧 Allocations"],["bills","🧾 Bills"],["paymethods","💸 Pay Methods"],["chat","💬 Chat"]].map(([id,label]) => (
           <button key={id} class={`rt-tab${tab===id?" active":""}`} onClick={() => setTab(id)}>{label}</button>
         ))}
         <div class="flex gap-2" style="margin-left:auto">
@@ -1133,6 +1315,8 @@ function AdminPanel({ onExit }: { onExit: () => void }) {
       {tab==="properties" && <PropertiesTab properties={properties} reload={reloadProps} />}
       {tab==="renters" && <RentersTab renters={renters} properties={properties} reload={reloadRenters} />}
       {tab==="payments" && <PaymentsTab payments={payments} renters={renters} reload={reloadPayments} />}
+      {tab==="bulletin" && <AnnouncementBoard announcements={announcements} reload={reloadAnnouncements} author="Management" admin />}
+      {tab==="documents" && <DocumentsTab documents={documents} reload={reloadDocuments} />}
       {tab==="allocations" && <AllocationsTab allocations={allocations} reload={reloadAllocs} />}
       {tab==="bills" && <BillsTab bills={bills} properties={properties} reload={reloadBills} />}
       {tab==="paymethods" && <PayMethodsTab payMethods={payMethods} reload={reloadPayMethods} />}
@@ -1141,7 +1325,7 @@ function AdminPanel({ onExit }: { onExit: () => void }) {
   );
 }
 
-function RenterPortal({ renters, properties, payments, allocations, bills, reloadBills, payMethods, onAdminLogin, reloadRenters }: { renters: Renter[]; properties: Property[]; payments: Payment[]; allocations: Allocation[]; bills: Bill[]; reloadBills: () => void; payMethods: PayMethod[]; onAdminLogin: () => void; reloadRenters: () => void }) {
+function RenterPortal({ renters, properties, payments, allocations, bills, reloadBills, payMethods, announcements, reloadAnnouncements, documents, onAdminLogin, reloadRenters }: { renters: Renter[]; properties: Property[]; payments: Payment[]; allocations: Allocation[]; bills: Bill[]; reloadBills: () => void; payMethods: PayMethod[]; announcements: Announcement[]; reloadAnnouncements: () => void; documents: HouseDocument[]; onAdminLogin: () => void; reloadRenters: () => void }) {
   const [renterId, setRenterId] = useState("");
   const [pinInput, setPinInput] = useState("");
   const [pinConfirm, setPinConfirm] = useState("");
@@ -1177,6 +1361,7 @@ function RenterPortal({ renters, properties, payments, allocations, bills, reloa
   const property = renter ? properties.find(p => p.id === renter.propertyId) : null;
   const myPayments = payments.filter(p => p.renterId === renterId);
   const paid = myPayments.filter(p => p.status==="paid").reduce((s,p) => s+p.amount, 0);
+  const position = renter ? rentPosition(renter, myPayments) : null;
   const _ptSorted = myPayments.filter(p => p.status==="paid" && p.paidThrough).map(p => p.paidThrough).sort();
   const paidThrough = _ptSorted.length > 0 ? _ptSorted[_ptSorted.length - 1] : null;
   const allTotal = allocations.reduce((s,a) => s+a.pct, 0);
@@ -1282,6 +1467,42 @@ function RenterPortal({ renters, properties, payments, allocations, bills, reloa
           )}
         </div>
       </div>
+      {position && (
+        <section class="rt-card rt-balance-card" style="margin-bottom:16px">
+          <div class="flex justify-between items-center gap-2" style="flex-wrap:wrap;margin-bottom:14px">
+            <div>
+              <div class="rt-card-title">Rent Tracker</div>
+              <div class="text-dim text-sm">{position.startIso} through {position.endIso}</div>
+            </div>
+            <span class={`rt-badge ${position.owed === 0 ? "rt-badge-success" : "rt-badge-warning"}`}>{position.owed === 0 ? "Current" : "Balance Due"}</span>
+          </div>
+          <div class="rt-ledger-grid">
+            <div><span>Scheduled rent</span><strong>{fmt(renter.rentAmount)}</strong></div>
+            <div><span>Prior balance / credit</span><strong>{position.adjustment < 0 ? "−" : ""}{fmt(Math.abs(position.adjustment))}</strong></div>
+            <div><span>Payments credited</span><strong>−{fmt(position.credited)}</strong></div>
+            <div class="total"><span>Still owed</span><strong>{fmt(position.owed)}</strong></div>
+          </div>
+          <div class="rt-progress-track"><div class="rt-progress-fill" style={`width:${Math.min(100, ((position.credited - Math.min(0, position.adjustment)) / Math.max(1, renter.rentAmount + Math.max(0, position.adjustment))) * 100)}%`} /></div>
+        </section>
+      )}
+      <section class="rt-card" style="margin-bottom:16px">
+        <div class="rt-card-title" style="margin-bottom:12px">Your Documents</div>
+        <div class="rt-document-list">
+          {renter.leaseUrl ? (
+            <a href={renter.leaseUrl} target="_blank" rel="noopener noreferrer" class="rt-document-link">
+              <span>📄</span><span><strong>Lease Agreement</strong><small>{renter.leaseName || "View your lease copy"}</small></span><span>Open →</span>
+            </a>
+          ) : <div class="text-dim text-sm">Your lease copy has not been uploaded yet.</div>}
+          {documents.map(d => (
+            <a href={d.documentUrl} target="_blank" rel="noopener noreferrer" class="rt-document-link" key={d.id}>
+              <span>📋</span><span><strong>{d.title}</strong><small>{d.documentName}</small></span><span>Open →</span>
+            </a>
+          ))}
+        </div>
+      </section>
+      <section style="margin-bottom:16px">
+        <AnnouncementBoard announcements={announcements} reload={reloadAnnouncements} author={renter.name} propertyId={renter.propertyId} />
+      </section>
       {renter.rentBreakdown && (
         <div class="rt-card" style="margin-bottom:16px">
           <div class="rt-card-title" style="margin-bottom:10px">🧾 Rent Breakdown</div>
@@ -1424,6 +1645,8 @@ export function App() {
   const [allocations] = useData<Allocation>("allocations");
   const [bills,,reloadBills] = useData<Bill>("bills");
   const [payMethods] = useData<PayMethod>("payMethods");
+  const [announcements,,reloadAnnouncements] = useData<Announcement>("announcements");
+  const [documents] = useData<HouseDocument>("documents");
   const goAdmin = () => { setAdminUnlocked(false); setMode("admin"); };
   const exitAdmin = () => { setAdminUnlocked(false); setMode("renter"); };
   return (
@@ -1433,7 +1656,7 @@ export function App() {
       </div>
       {mode==="admin"
         ? adminUnlocked ? <AdminPanel onExit={exitAdmin} /> : <AdminAuth onUnlock={() => setAdminUnlocked(true)} />
-        : <RenterPortal renters={renters} properties={properties} payments={payments} allocations={allocations} bills={bills} reloadBills={reloadBills} payMethods={payMethods} onAdminLogin={goAdmin} reloadRenters={reloadRenters} />
+        : <RenterPortal renters={renters} properties={properties} payments={payments} allocations={allocations} bills={bills} reloadBills={reloadBills} payMethods={payMethods} announcements={announcements} reloadAnnouncements={reloadAnnouncements} documents={documents} onAdminLogin={goAdmin} reloadRenters={reloadRenters} />
       }
       <AiChatWidget />
     </div>
